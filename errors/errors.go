@@ -125,11 +125,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"reflect"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"time"
 	"unsafe"
 
@@ -425,23 +423,9 @@ func (e Error) LogAttrs(ctx context.Context) []slog.Attr {
 // TraceAttrs converts the error to a list of trace attributes consumable
 // by the OpenTelemetry trace package. This does not include attributes on the .Msg field.
 // However, it will look at the slog.Attr fields on the error and in the Context and convert
-// them to trace attributes. Specifically, we support the following slog.Value kinds:
-// - Bool
-// - Int64
-// - Uint64
-// - Float64
-// - String
-// - Duration - adds _ns to the key and records as int64 nanoseconds
-// - Time     - adds _unix_ns to the key and records as int64 unix nanoseconds
-// - Group    - Supports a group of any of the above types, the key for the group becomes a namespace prefix
+// them using span.AppendSlogAttrs. These are added to the attrs passed in and returned.
 //
-// Not supported:
-// - Any       - I'm not sure what to do with this
-// - LogValuer - and not sure with this either
-// These are added to the attrs passed in and returned.
-//
-// Prepend is a string that is prepended to all attribute keys. This is should be a namespace, which should
-// use the namespace method with "." in the prepend.
+// Prepend is a dotted namespace for the converted slog attributes. A trailing dot is optional.
 func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attributes) span.Attributes {
 	if attrs.Err() != nil {
 		return attrs
@@ -461,9 +445,7 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 	}
 	attrs.Add(attribute.String("ErrSrc", e.File))
 	attrs.Add(attribute.Int("ErrLine", e.Line))
-	for _, akv := range slogAttrsToOtelAttrs([]string{prepend}, e.attrs) {
-		attrs.Add(akv)
-	}
+	attrs.Attrs = span.AppendSlogAttrs(attrs.Attrs, prepend, e.attrs...)
 
 	return attrs
 }
@@ -471,65 +453,6 @@ func (e Error) TraceAttrs(ctx context.Context, prepend string, attrs span.Attrib
 // IsZero returns true if the error is a zero value. This can be used to check if an error has been set or not.
 func (e Error) IsZero() bool {
 	return e.Category == nil && e.Type == nil && e.Msg == nil && e.File == "" && e.Line == 0 && e.ErrTime.IsZero() && e.StackTrace == "" && len(e.attrs) == 0 && e.LogLevel == slog.Level(0) && e.IsFunc == nil
-}
-
-// slogAttrsToOtelAttrs converts a list of slog.Attr to a list of OpenTelemetry attribute.KeyValue.
-func slogAttrsToOtelAttrs(namespace []string, attrs []slog.Attr) []attribute.KeyValue {
-	akvs := make([]attribute.KeyValue, 0, len(attrs))
-	for _, skv := range attrs {
-		akvs = append(akvs, slogAttrToOtelAttr(namespace, skv)...)
-	}
-	return akvs
-}
-
-// slogAttrToOtelAttr converts a single slog.Attr to a list of OpenTelemetry attribute.KeyValue.
-func slogAttrToOtelAttr(namespace []string, kv slog.Attr) []attribute.KeyValue {
-	namespace = append(namespace, kv.Key)
-	key := strings.Join(namespace, ".")
-
-	switch kv.Value.Kind() {
-	case slog.KindBool:
-		return []attribute.KeyValue{attribute.Bool(key, kv.Value.Bool())}
-	case slog.KindInt64:
-		return []attribute.KeyValue{attribute.Int64(key, kv.Value.Int64())}
-	case slog.KindUint64:
-		if kv.Value.Uint64() < math.MaxInt64 {
-			return []attribute.KeyValue{attribute.Int64(key, int64(kv.Value.Uint64()))}
-		}
-		log.Default().Warn(fmt.Sprintf("slogAttrToOtelAttr: uint64 value %d for key %q exceeds int64 range, attribute dropped", kv.Value.Uint64(), key))
-	case slog.KindFloat64:
-		return []attribute.KeyValue{attribute.Float64(key, kv.Value.Float64())}
-	case slog.KindString:
-		return []attribute.KeyValue{attribute.String(key, kv.Value.String())}
-	case slog.KindDuration:
-		k := key
-		if !strings.HasSuffix(k, "ns") {
-			k = k + "_ns"
-		}
-		return []attribute.KeyValue{
-			{
-				Key:   attribute.Key(k),
-				Value: attribute.Int64Value(int64(kv.Value.Duration())),
-			},
-		}
-	case slog.KindTime:
-		k := key
-		if !strings.HasSuffix(k, "unix_ns") {
-			k = k + "_unix_ns"
-		}
-		return []attribute.KeyValue{
-			{
-				Key:   attribute.Key(k),
-				Value: attribute.Int64Value(int64(kv.Value.Time().UnixNano())),
-			},
-		}
-	case slog.KindGroup:
-		return slogAttrsToOtelAttrs(namespace, kv.Value.Group())
-	case slog.KindAny, slog.KindLogValuer:
-		log.Default().Warn(fmt.Sprintf("slogAttrToOtelAttr: unsupported slog.Value kind %v for key %q, attribute dropped", kv.Value.Kind(), key))
-		return nil
-	}
-	return nil
 }
 
 // trace adds the error to the trace span. This is automatically done when the error is created.

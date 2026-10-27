@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -439,7 +440,7 @@ func TestLog(t *testing.T) {
 			want: map[string]any{
 				"Category":    "Request",
 				"ErrSrc":      "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
-				"ErrLine":     433,
+				"ErrLine":     434,
 				"ErrTime":     ti.UTC(),
 				"Type":        "BadRequest",
 				"level":       "ERROR",
@@ -460,7 +461,7 @@ func TestLog(t *testing.T) {
 			want: map[string]any{
 				"Category":      "Request",
 				"ErrSrc":        "/Users/blah/trees/github.com/gostdlib/base/errors/errors_test.go",
-				"ErrLine":       453,
+				"ErrLine":       454,
 				"ErrTime":       ti.UTC(),
 				"Type":          "BadRequest",
 				"level":         "ERROR",
@@ -588,7 +589,7 @@ func TestTraceAttrs(t *testing.T) {
 				attribute.String("Type", "BadRequest"),
 				attribute.String("ErrSrc", "test.go"),
 				attribute.Int("ErrLine", 1),
-				attribute.String(".customKey", "customValue"),
+				attribute.String("customKey", "customValue"),
 			},
 		},
 		{
@@ -664,7 +665,7 @@ func TestTraceAttrs(t *testing.T) {
 	}
 }
 
-func TestSlogAttrsToOtelAttrs(t *testing.T) {
+func TestTraceAttrsSlogConversion(t *testing.T) {
 	t.Parallel()
 
 	testTime := time.Date(2025, 1, 15, 10, 30, 0, 0, time.UTC)
@@ -694,10 +695,10 @@ func TestSlogAttrsToOtelAttrs(t *testing.T) {
 			want:      []attribute.KeyValue{attribute.Int64("ns.count", 100)},
 		},
 		{
-			name:      "Success: Uint64 exceeding int64 range is dropped with warning",
+			name:      "Success: Uint64 exceeding int64 range is preserved as a string",
 			namespace: []string{"ns"},
 			attrs:     []slog.Attr{slog.Uint64("big", math.MaxUint64)},
-			want:      []attribute.KeyValue{},
+			want:      []attribute.KeyValue{attribute.String("ns.big", "18446744073709551615")},
 		},
 		{
 			name:      "Success: Float64 conversion",
@@ -789,9 +790,9 @@ func TestSlogAttrsToOtelAttrs(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		got := slogAttrsToOtelAttrs(test.namespace, test.attrs)
+		got := (Error{attrs: test.attrs}).TraceAttrs(context.Background(), strings.Join(test.namespace, "."), span.Attributes{}).Attrs[2:]
 		if diff := pretty.Compare(test.want, got); diff != "" {
-			t.Errorf("TestSlogAttrsToOtelAttrs(%s): -want/+got:\n%s", test.name, diff)
+			t.Errorf("TestTraceAttrsSlogConversion(%s): -want/+got:\n%s", test.name, diff)
 		}
 	}
 }
